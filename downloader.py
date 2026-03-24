@@ -92,3 +92,33 @@ class ContentDownloader:
         size_mb = output_path.stat().st_size / (1024 * 1024)
         print(f"Saved: {output_path} ({size_mb:.2f} MB)")
         return output_path
+
+    def download_audio(
+        self,
+        content_id: str,
+        start_ms: int,
+        end_ms: int,
+        output_dir: str = "downloads",
+        sample_rate: int = 16_000,
+        offering: str = "default_clear",
+    ) -> Optional[Path]:
+        """Download a video segment and extract mono WAV audio.
+        Returns:
+            Path to the extracted .wav file, or None on download failure.
+        """
+        from src.audio_utils import extract_audio
+
+        video_path = self.download(
+            content_id=content_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            output_dir=output_dir,
+            offering=offering,
+        )
+        if video_path is None:
+            return None
+
+        return extract_audio(
+            video_path=video_path,
+            sample_rate=sample_rate,
+        )
