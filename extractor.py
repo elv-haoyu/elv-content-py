@@ -10,7 +10,7 @@ class TitleExtractor:
 
     FIELDS = [
         "display_title", "release_date", "release_year",
-        "plot", "actor", "director", "screenplay",
+        "plot", "actor", "voice", "host", "director", "screenplay",
     ]
 
     def __init__(self, auth_token: str, config_url: str = DEFAULT_CONFIG_URL):
@@ -29,13 +29,23 @@ class TitleExtractor:
 
         # Actors
         actor_info = talent.get("actor") or []
-        actors = []
-        if actor_info:
-            actors = [
-                f"{a['name']} plays {a['character_name']}"
-                for a in actor_info
-                if a.get("name") and a.get("character_name")
-            ]
+        actors = [
+            f"{a['name']} plays {a['character_name']}"
+            for a in actor_info
+            if a.get("name") and a.get("character_name")
+        ]
+
+        # Voice actors (same structure as actor)
+        voice_info = talent.get("voice") or []
+        voices = [
+            f"{v['name']} voices {v['character_name']}"
+            for v in voice_info
+            if v.get("name") and v.get("character_name")
+        ]
+
+        # Hosts (name only, like directors)
+        host_info = talent.get("host") or []
+        hosts = [h["name"] for h in host_info if h.get("name")]
 
         # Directors
         director_info = talent.get("director") or []
@@ -44,7 +54,7 @@ class TitleExtractor:
         # Screenplay / written by (deduplicated)
         screenplay_by = talent.get("screenplay_by") or []
         written_by = talent.get("written_by") or []
-        seen = set()
+        seen: set[str] = set()
         for entry in [*screenplay_by, *written_by]:
             key = entry.get("name") if isinstance(entry, dict) else entry
             if key and key not in seen:
@@ -56,8 +66,10 @@ class TitleExtractor:
             "release_date": info.get("release_date"),
             "release_year": info.get("us_release_year"),
             "plot": info.get("synopsis"),
-            "actor": actors,
-            "director": directors,
+            "actor": actors or None,
+            "voice": voices or None,
+            "host": hosts or None,
+            "director": directors or None,
             "screenplay": screenplay,
         }
 
@@ -71,31 +83,26 @@ class TitleExtractor:
 
         Returns:
             Dict with keys: display_title, release_date, release_year,
-            plot, actor, director, screenplay (only non-empty fields).
+            plot, actor, voice, host, director, screenplay (only non-empty fields).
         """
         content = self._get_content(qhit)
         metadata = content.content_object_metadata(metadata_subtree="public")
         return self._parse_title_info(metadata)
 
     def extract_batch(self, qhits: List[str]) -> Dict[str, dict]:
-        """Extract title information for multiple content objects.
-
-        Args:
-            qhits: List of content object IDs or version hashes.
-
-        Returns:
-            Dict mapping each qid to its title info.
+        """
+        Extract title information for multiple content objects.
         """
         results = {}
         for qhit in qhits:
             content = self._get_content(qhit)
-            metadata = content.content_object_metadata(metadata_subtree="public")
+            metadata = content.content_object_metadata(
+                metadata_subtree="public")
             results[content.qid] = self._parse_title_info(metadata)
         return results
 
     @staticmethod
     def load(path: str) -> dict:
-        """Load title info from a JSON file."""
         p = Path(path)
         if not p.exists():
             return {}
@@ -104,7 +111,6 @@ class TitleExtractor:
 
     @staticmethod
     def save(title_info: dict, path: str):
-        """Save title info to a JSON file."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "w") as f:
