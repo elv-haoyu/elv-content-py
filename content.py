@@ -38,6 +38,33 @@ class Content:
         """Return a fabric node URL."""
         return self._client.fabric_uris[0]
 
+    def total_duration_ms(self, offering: str = "default_clear") -> int:
+        """Return the total content duration in milliseconds from the DASH manifest."""
+        import re
+
+        opts = self.playout_options(offering)
+        dash_uri = opts.get("dash-clear", {}).get("uri", "")
+        if not dash_uri:
+            raise ValueError("No dash-clear playout URI found")
+
+        manifest_url = (
+            f"{self.fabric_node}/q/{self.qhash}/rep/playout/{offering}/{dash_uri}"
+        )
+        resp = requests.get(manifest_url)
+        resp.raise_for_status()
+
+        match = re.search(
+            r'mediaPresentationDuration="PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?"',
+            resp.text,
+        )
+        if not match:
+            raise ValueError("Could not find mediaPresentationDuration in DASH manifest")
+
+        hours = float(match.group(1) or 0)
+        minutes = float(match.group(2) or 0)
+        seconds = float(match.group(3) or 0)
+        return int((hours * 3600 + minutes * 60 + seconds) * 1000)
+
     def playout_options(self, offering: str = "default_clear") -> Dict[str, Any]:
         """Fetch playout options for the given offering.
 
@@ -51,12 +78,14 @@ class Content:
 
     def default_representations(
         self, offering: str = "default_clear",
-    ) -> tuple[str, str]:
-        """Return (video_rep_id, audio_rep_id) for a download.
+    ) -> tuple[list[str], str]:
+        """Return (video_rep_ids, audio_rep_id) for a download.
 
         Parses the DASH manifest to get the actual representation IDs
         (e.g. 'videovideo_640x360_h264@1055556', 'english_5_1audio_aac@384000').
-        Picks the lowest-bandwidth video and prefers english_5_1 > english_stereo.
+        Returns video reps sorted by bandwidth (ascending) so callers can
+        fall back to the next rep if the lowest one is rejected by the API.
+        Prefers english_5_1 > english_stereo for audio.
         """
         import re
 
@@ -101,8 +130,9 @@ class Content:
         if not audio_reps:
             raise ValueError("No audio representations found in DASH manifest")
 
-        # Video: pick lowest bandwidth (smallest download)
-        video_rep = min(video_reps, key=lambda x: x[1])[0]
+        # Video: sorted by bandwidth ascending (lowest first)
+        video_reps_sorted = [r[0]
+                             for r in sorted(video_reps, key=lambda x: x[1])]
 
         # Audio: prefer english_5_1, fall back to english_stereo
         english_5_1 = [r for r in audio_reps if "english_5_1" in r[0]]
@@ -118,7 +148,7 @@ class Content:
                 f"No English audio track found. Available: {available}"
             )
 
-        return video_rep, audio_rep
+        return video_reps_sorted, audio_rep
 
     def __getattr__(self, name):
         attr = getattr(self._client, name)
