@@ -183,7 +183,9 @@ def load_all_title_info(metadata_dir: Path) -> Dict:
         qid = path.name.removesuffix("_title.json")
         try:
             with open(path) as f:
-                result[qid] = json.load(f)
+                info = json.load(f)
+            result[qid] = info
+            _title_cache[qid] = info
         except Exception:
             logger.warning(f"Failed to load {path}")
     return result
@@ -216,22 +218,18 @@ def check_title_fields(qid: str, info: dict,
     """
     if not info:
         msg = "no title metadata"
-        logger.warning(f"{qid}: {msg}")
-        if error_log:
-            error_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(error_log, "a") as f:
-                f.write(f"{qid}: {msg}\n")
-        return list(EXPECTED_FIELDS)
-
-    missing = [f for f in EXPECTED_FIELDS if f not in info]
-    if missing:
+    else:
+        missing = [f for f in EXPECTED_FIELDS if f not in info]
+        if not missing:
+            return []
         msg = f"title_info missing fields: {', '.join(missing)}"
-        logger.warning(f"{qid}: {msg}")
-        if error_log:
-            error_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(error_log, "a") as f:
-                f.write(f"{qid}: {msg}\n")
-    return missing
+
+    logger.warning(f"{qid}: {msg}")
+    if error_log:
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(error_log, "a") as f:
+            f.write(f"{qid}: {msg}\n")
+    return list(EXPECTED_FIELDS) if not info else missing
 
 
 # ---------------------------------------------------------------------------
@@ -274,11 +272,8 @@ class TitleExtractor:
             if cached is not None:
                 logger.info(f"{qid}: title_info already cached")
                 return cached
-
-        if force:
-            path = title_path(self.metadata_dir, qid)
-            if path.exists():
-                path.unlink()
+        else:
+            title_path(self.metadata_dir, qid).unlink(missing_ok=True)
             _title_cache.pop(qid, None)
 
         logger.info(f"{qid}: fetching title_info from fabric")
@@ -291,7 +286,8 @@ class TitleExtractor:
         results = {}
         for qhit in qhits:
             content = self._get_content(qhit)
-            metadata = content.content_object_metadata(metadata_subtree="public")
+            metadata = content.content_object_metadata(
+                metadata_subtree="public")
             info = parse_title_metadata(metadata, client=content)
             if info:
                 save_title_info_for_qid(self.metadata_dir, content.qid, info)
