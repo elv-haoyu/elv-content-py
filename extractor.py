@@ -254,10 +254,62 @@ class TitleExtractor:
     def _get_content(self, qhit: str) -> Content:
         return Content(qhit, self._token, self._config_url)
 
-    # --- single QID ---
+    @staticmethod
+    def _parse_title_info(metadata: dict) -> dict:
+        """Parse raw fabric metadata into a normalized title info dict."""
+        asset = metadata.get("asset_metadata") or {}
+        info = asset.get("info") or {}
+        talent = info.get("talent") or {}
+
+        cast: list[str] = []
+        for a in talent.get("actor") or []:
+            if a.get("name") and a.get("character_name"):
+                cast.append(f"{a['name']} plays {a['character_name']}")
+        for v in talent.get("voice") or []:
+            if v.get("name") and v.get("character_name"):
+                cast.append(f"{v['name']} voices {v['character_name']}")
+        for h in talent.get("host") or []:
+            if h.get("name"):
+                cast.append(f"{h['name']} (Host)")
+
+        # Directors
+        director_info = talent.get("director") or []
+        directors = [d["name"] for d in director_info if d.get("name")]
+
+        # Screenplay / written by (deduplicated)
+        screenplay_by = talent.get("screenplay_by") or []
+        written_by = talent.get("written_by") or []
+        seen: set[str] = set()
+        for entry in [*screenplay_by, *written_by]:
+            key = entry.get("name") if isinstance(entry, dict) else entry
+            if key and key not in seen:
+                seen.add(key)
+        screenplay = list(seen) or None
+
+        fields = {
+            # Sports/VOD content stores its title at public/name rather than
+            # public/asset_metadata/display_title — fall back to it.
+            "display_title": asset.get("display_title") or metadata.get("name"),
+            "release_date": info.get("release_date"),
+            "release_year": info.get("us_release_year"),
+            "plot": info.get("synopsis"),
+            "cast": cast or None,
+            "director": directors or None,
+            "screenplay": screenplay,
+        }
+
+        return {k: v for k, v in fields.items() if v}
 
     def extract(self, qhit: str) -> dict:
-        """Extract title information for a single content object (always hits fabric)."""
+        """Extract title information for a single content object.
+
+        Args:
+            qhit: Content object ID (iq__...) or version hash (hq__...).
+
+        Returns:
+            Dict with keys: display_title, release_date, release_year,
+            plot, cast, director, screenplay (only non-empty fields).
+        """
         content = self._get_content(qhit)
         metadata = content.content_object_metadata(metadata_subtree="public")
         result = parse_title_metadata(metadata, client=content)
