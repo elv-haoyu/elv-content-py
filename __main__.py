@@ -9,6 +9,7 @@ Usage:
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .extractor import TitleExtractor
 from .downloader import ContentDownloader
@@ -25,7 +26,7 @@ def _resolve_token(raw: str) -> str:
 
 def cmd_title(args):
     token = _resolve_token(args.token)
-    kwargs = {"auth_token": token}
+    kwargs = {"auth_token": token, "metadata_dir": Path(args.metadata_dir)}
     if args.config_url:
         kwargs["config_url"] = args.config_url
 
@@ -33,7 +34,10 @@ def cmd_title(args):
     results = extractor.extract_batch(args.qids)
 
     if args.output:
-        TitleExtractor.save(results, args.output)
+        # extract_batch already cached one file per QID under metadata_dir;
+        # -o additionally writes the combined result to a single file.
+        with open(args.output, "w") as f:
+            json.dump(results, f, indent=2)
         print(f"Saved to {args.output}", file=sys.stderr)
     else:
         print(json.dumps(results, indent=2))
@@ -71,6 +75,8 @@ def main():
     tp.add_argument("--qids", nargs="+", required=True,
                     help="Content object IDs")
     tp.add_argument("--config-url", default=None, help="Fabric config URL")
+    tp.add_argument("--metadata-dir", default="metadata",
+                    help="Directory for per-QID title caches")
     tp.add_argument("-o", "--output", default=None,
                     help="Output JSON file path")
     tp.set_defaults(func=cmd_title)

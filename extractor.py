@@ -72,19 +72,23 @@ def _extract_cast_from_ml(client: Content) -> list:
     """Pattern 3 (ml subtree): v0.content_params.castlist as {actor: character}."""
     try:
         ml = client.content_object_metadata(metadata_subtree='ml')
-        castlist = (ml.get("v0") or {}).get(
-            "content_params", {}).get("castlist") or {}
-        cast = []
-        for actor, character in castlist.items():
-            actor = actor.strip()
-            character = (character or "").strip()
-            if character and character != actor:
-                cast.append(f"{actor} plays {character}")
-            elif actor:
-                cast.append(actor)
-        return cast
-    except Exception:
+    except Exception as exc:
+        # Most objects have no ml subtree, but an auth or network failure looks
+        # identical here — log it so it is not silently read as "no cast".
+        logger.debug(f"{client.qid}: no cast from ml subtree — {exc}")
         return []
+
+    castlist = (ml.get("v0") or {}).get(
+        "content_params", {}).get("castlist") or {}
+    cast = []
+    for actor, character in castlist.items():
+        actor = actor.strip()
+        character = (character or "").strip()
+        if character and character != actor:
+            cast.append(f"{actor} plays {character}")
+        elif actor:
+            cast.append(actor)
+    return cast
 
 
 def _extract_directors(talent: dict) -> list:
@@ -98,14 +102,16 @@ def _extract_directors(talent: dict) -> list:
 
 
 def _extract_screenplay(talent: dict) -> list | None:
-    """Extract screenplay/writer credits from either pattern."""
-    seen = set()
+    """Extract screenplay/writer credits from either pattern, in credit order."""
+    names: list[str] = []
+    seen: set[str] = set()
     for key in ("screenplay_by", "written_by", "screenplay"):
         for entry in talent.get(key) or []:
             name = _full_name(entry) if isinstance(entry, dict) else entry
             if name and name not in seen:
                 seen.add(name)
-    return list(seen) or None
+                names.append(name)
+    return names or None
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +142,9 @@ def parse_title_metadata(metadata: dict, client: Optional[Content] = None) -> di
     plot = info.get("synopsis") or asset.get("synopsis")
 
     fields = {
-        "display_title": asset.get("display_title"),
+        # Sports/VOD content stores its title at public/name rather than
+        # public/asset_metadata/display_title — fall back to it.
+        "display_title": asset.get("display_title") or metadata.get("name"),
         "release_date":  info.get("release_date"),
         "release_year":  info.get("us_release_year"),
         "title_type":    asset.get("title_type", ""),
@@ -153,24 +161,36 @@ def parse_title_metadata(metadata: dict, client: Optional[Content] = None) -> di
 # Per-QID file cache
 # ---------------------------------------------------------------------------
 
-# In-memory cache to avoid repeated disk reads on hot paths
-_title_cache: dict[str, dict] = {}
+# In-memory cache to avoid repeated disk reads on hot paths. Keyed by
+# (metadata_dir, qid) so two extractors pointed at different dirs never
+# serve each other's entries.
+_title_cache: dict[tuple[str, str], dict] = {}
+
+
+def _cache_key(metadata_dir: Path, qid: str) -> tuple[str, str]:
+    return (str(metadata_dir), qid)
 
 
 def title_path(metadata_dir: Path, qid: str) -> Path:
     return metadata_dir / f"{qid}_title.json"
 
 
+def invalidate_title_cache(metadata_dir: Path, qid: str):
+    """Drop a QID's in-memory cache entry (call after deleting its file)."""
+    _title_cache.pop(_cache_key(metadata_dir, qid), None)
+
+
 def load_title_info_for_qid(metadata_dir: Path, qid: str) -> dict | None:
     """Load cached title info for a single content from metadata/{qid}_title.json."""
-    if qid in _title_cache:
-        return _title_cache[qid]
+    key = _cache_key(metadata_dir, qid)
+    if key in _title_cache:
+        return _title_cache[key]
     path = title_path(metadata_dir, qid)
     if not path.exists():
         return None
     with open(path) as f:
         info = json.load(f)
-    _title_cache[qid] = info
+    _title_cache[key] = info
     return info
 
 
@@ -185,7 +205,7 @@ def load_all_title_info(metadata_dir: Path) -> Dict:
             with open(path) as f:
                 info = json.load(f)
             result[qid] = info
-            _title_cache[qid] = info
+            _title_cache[_cache_key(metadata_dir, qid)] = info
         except Exception:
             logger.warning(f"Failed to load {path}")
     return result
@@ -197,7 +217,7 @@ def save_title_info_for_qid(metadata_dir: Path, qid: str, info: dict):
     path = title_path(metadata_dir, qid)
     with open(path, "w") as f:
         json.dump(info, f, indent=2)
-    _title_cache[qid] = info
+    _title_cache[_cache_key(metadata_dir, qid)] = info
 
 
 # ---------------------------------------------------------------------------
@@ -254,52 +274,6 @@ class TitleExtractor:
     def _get_content(self, qhit: str) -> Content:
         return Content(qhit, self._token, self._config_url)
 
-    @staticmethod
-    def _parse_title_info(metadata: dict) -> dict:
-        """Parse raw fabric metadata into a normalized title info dict."""
-        asset = metadata.get("asset_metadata") or {}
-        info = asset.get("info") or {}
-        talent = info.get("talent") or {}
-
-        cast: list[str] = []
-        for a in talent.get("actor") or []:
-            if a.get("name") and a.get("character_name"):
-                cast.append(f"{a['name']} plays {a['character_name']}")
-        for v in talent.get("voice") or []:
-            if v.get("name") and v.get("character_name"):
-                cast.append(f"{v['name']} voices {v['character_name']}")
-        for h in talent.get("host") or []:
-            if h.get("name"):
-                cast.append(f"{h['name']} (Host)")
-
-        # Directors
-        director_info = talent.get("director") or []
-        directors = [d["name"] for d in director_info if d.get("name")]
-
-        # Screenplay / written by (deduplicated)
-        screenplay_by = talent.get("screenplay_by") or []
-        written_by = talent.get("written_by") or []
-        seen: set[str] = set()
-        for entry in [*screenplay_by, *written_by]:
-            key = entry.get("name") if isinstance(entry, dict) else entry
-            if key and key not in seen:
-                seen.add(key)
-        screenplay = list(seen) or None
-
-        fields = {
-            # Sports/VOD content stores its title at public/name rather than
-            # public/asset_metadata/display_title — fall back to it.
-            "display_title": asset.get("display_title") or metadata.get("name"),
-            "release_date": info.get("release_date"),
-            "release_year": info.get("us_release_year"),
-            "plot": info.get("synopsis"),
-            "cast": cast or None,
-            "director": directors or None,
-            "screenplay": screenplay,
-        }
-
-        return {k: v for k, v in fields.items() if v}
-
     def extract(self, qhit: str) -> dict:
         """Extract title information for a single content object.
 
@@ -326,7 +300,7 @@ class TitleExtractor:
                 return cached
         else:
             title_path(self.metadata_dir, qid).unlink(missing_ok=True)
-            _title_cache.pop(qid, None)
+            invalidate_title_cache(self.metadata_dir, qid)
 
         logger.info(f"{qid}: fetching title_info from fabric")
         return self.extract(qid)
