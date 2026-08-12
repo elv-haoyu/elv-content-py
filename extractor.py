@@ -10,7 +10,7 @@ class TitleExtractor:
 
     FIELDS = [
         "display_title", "release_date", "release_year",
-        "plot", "actor", "voice", "host", "director", "screenplay",
+        "plot", "cast", "director", "screenplay",
     ]
 
     def __init__(self, auth_token: str, config_url: str = DEFAULT_CONFIG_URL):
@@ -27,25 +27,16 @@ class TitleExtractor:
         info = asset.get("info") or {}
         talent = info.get("talent") or {}
 
-        # Actors
-        actor_info = talent.get("actor") or []
-        actors = [
-            f"{a['name']} plays {a['character_name']}"
-            for a in actor_info
-            if a.get("name") and a.get("character_name")
-        ]
-
-        # Voice actors (same structure as actor)
-        voice_info = talent.get("voice") or []
-        voices = [
-            f"{v['name']} voices {v['character_name']}"
-            for v in voice_info
-            if v.get("name") and v.get("character_name")
-        ]
-
-        # Hosts (name only, like directors)
-        host_info = talent.get("host") or []
-        hosts = [h["name"] for h in host_info if h.get("name")]
+        cast: list[str] = []
+        for a in talent.get("actor") or []:
+            if a.get("name") and a.get("character_name"):
+                cast.append(f"{a['name']} plays {a['character_name']}")
+        for v in talent.get("voice") or []:
+            if v.get("name") and v.get("character_name"):
+                cast.append(f"{v['name']} voices {v['character_name']}")
+        for h in talent.get("host") or []:
+            if h.get("name"):
+                cast.append(f"{h['name']} (Host)")
 
         # Directors
         director_info = talent.get("director") or []
@@ -62,13 +53,13 @@ class TitleExtractor:
         screenplay = list(seen) or None
 
         fields = {
-            "display_title": asset.get("display_title"),
+            # Sports/VOD content stores its title at public/name rather than
+            # public/asset_metadata/display_title — fall back to it.
+            "display_title": asset.get("display_title") or metadata.get("name"),
             "release_date": info.get("release_date"),
             "release_year": info.get("us_release_year"),
             "plot": info.get("synopsis"),
-            "actor": actors or None,
-            "voice": voices or None,
-            "host": hosts or None,
+            "cast": cast or None,
             "director": directors or None,
             "screenplay": screenplay,
         }
@@ -83,7 +74,7 @@ class TitleExtractor:
 
         Returns:
             Dict with keys: display_title, release_date, release_year,
-            plot, actor, voice, host, director, screenplay (only non-empty fields).
+            plot, cast, director, screenplay (only non-empty fields).
         """
         content = self._get_content(qhit)
         metadata = content.content_object_metadata(metadata_subtree="public")
