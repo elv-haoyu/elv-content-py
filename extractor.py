@@ -52,7 +52,7 @@ def _extract_cast_pattern1(talent: dict) -> list:
 
 
 def _extract_cast_pattern2(talent: dict) -> list:
-    """Pattern 2 (MGM): talent.cast / talent.cast_mdb with
+    """Pattern 2: talent.cast / talent.cast_mdb with
     {talent_first_name, talent_last_name, character_name}."""
     cast = []
     entries = talent.get("cast") or talent.get("cast_mdb") or []

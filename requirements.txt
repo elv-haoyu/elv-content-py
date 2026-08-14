@@ -1,0 +1,9 @@
+# Every module.
+requests
+
+# parts: center-channel / audio extraction, when there is no ffmpeg on PATH.
+imageio-ffmpeg
+
+# content / downloader / extractor. elv-client-py is not on PyPI.
+elv-client-py @ git+https://github.com/eluv-io/elv-client-py.git
+loguru

@@ -1,31 +1,41 @@
 """
-CLI entry point for elv_title_extractor.
+CLI entry point.
 
 Usage:
-  python -m elv_title_extractor title --token TOKEN --qids iq__xxx iq__yyy -o output.json
-  python -m elv_title_extractor download --token TOKEN --qid iq__xxx --start 0 --end 120000
+  python -m elv_content_py token iq__xxx --secret 0x<hex>
+  python -m elv_content_py parts iq__xxx --secret 0x<hex> -o /ml/data/content
+  python -m elv_content_py title --qids iq__xxx iq__yyy -o output.json
+  python -m elv_content_py download --qid iq__xxx --start 0 --end 120000
+
+`token` and `parts` speak to the `elv` CLI and need only requests; `title` and
+`download` go through elv_client_py. Both read their auth token from --token,
+which takes a token or a file whose last line is one, and defaults to
+./token.txt.
 """
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
-from .extractor import TitleExtractor
-from .downloader import ContentDownloader
+from . import elv_token, parts
+from .elv_token import resolve_token
 
 
-def _resolve_token(raw: str) -> str:
-    """Resolve a token string or file path to a token value."""
-    try:
-        with open(raw, "r") as f:
-            return f.readlines()[-1].strip()
-    except (FileNotFoundError, IsADirectoryError):
-        return raw
+def cmd_token(args):
+    elv_token.run(args)
+
+
+def cmd_parts(args):
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    sys.exit(parts.run(args))
 
 
 def cmd_title(args):
-    token = _resolve_token(args.token)
+    from .extractor import TitleExtractor
+
+    token = resolve_token(args.token)
     kwargs = {"auth_token": token, "metadata_dir": Path(args.metadata_dir)}
     if args.config_url:
         kwargs["config_url"] = args.config_url
@@ -44,22 +54,27 @@ def cmd_title(args):
 
 
 def cmd_download(args):
-    token = _resolve_token(args.token)
+    from .downloader import ContentDownloader
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    token = resolve_token(args.token)
     kwargs = {"auth_token": token}
     if args.config_url:
         kwargs["config_url"] = args.config_url
 
     downloader = ContentDownloader(**kwargs)
-    downloader.download(
+    path = downloader.download(
         content_id=args.qid,
         start_ms=args.start,
         end_ms=args.end,
         output_dir=args.output_dir,
         offering=args.offering,
         format=args.format,
-        representation=args.representation,
-        audio=args.audio,
+        audio_only=args.audio_only,
     )
+    if path is None:
+        sys.exit(1)
+    print(path)
 
 
 def main():
@@ -68,10 +83,23 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # ---- token subcommand ------------------------------------------------ #
+    kp = sub.add_parser("token", help="Create a fabric auth token via the elv CLI")
+    elv_token.add_arguments(kp)
+    kp.set_defaults(func=cmd_token)
+
+    # ---- parts subcommand ------------------------------------------------ #
+    pp = sub.add_parser(
+        "parts", help="Download a whole object's media parts via the elv CLI"
+    )
+    parts.add_arguments(pp)
+    pp.set_defaults(func=cmd_parts)
+
     # ---- title subcommand ------------------------------------------------ #
     tp = sub.add_parser("title", help="Extract title metadata")
-    tp.add_argument("--token", required=True,
-                    help="Auth token or path to token file")
+    tp.add_argument("--token", default=None,
+                    help="Auth token, or a file whose last line is one "
+                         "(default: ./token.txt)")
     tp.add_argument("--qids", nargs="+", required=True,
                     help="Content object IDs")
     tp.add_argument("--config-url", default=None, help="Fabric config URL")
@@ -82,9 +110,10 @@ def main():
     tp.set_defaults(func=cmd_title)
 
     # ---- download subcommand --------------------------------------------- #
-    dp = sub.add_parser("download", help="Download a video segment")
-    dp.add_argument("--token", required=True,
-                    help="Auth token or path to token file")
+    dp = sub.add_parser("download", help="Download a transcoded time range")
+    dp.add_argument("--token", default=None,
+                    help="Auth token, or a file whose last line is one "
+                         "(default: ./token.txt)")
     dp.add_argument("--qid", required=True, help="Content object ID (iq__...)")
     dp.add_argument("--start", type=int, required=True,
                     metavar="MS", help="Start time in ms")
@@ -95,9 +124,8 @@ def main():
     dp.add_argument("--offering", default="default_clear",
                     help="Playout offering")
     dp.add_argument("--format", default="mp4", help="Container format")
-    dp.add_argument("--representation", default=None,
-                    help="Video representation string")
-    dp.add_argument("--audio", default=None, help="Audio track identifier")
+    dp.add_argument("--audio-only", action="store_true",
+                    help="Skip the video representation")
     dp.add_argument("--config-url", default=None, help="Fabric config URL")
     dp.set_defaults(func=cmd_download)
 

@@ -3,8 +3,7 @@ import requests
 
 from elv_client_py import ElvClient
 
-
-DEFAULT_CONFIG_URL = "https://main.net955305.contentfabric.io/config"
+from .config import DEFAULT_CONFIG_URL
 
 
 class Content:

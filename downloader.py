@@ -352,7 +352,7 @@ class ContentDownloader:
         Returns:
             Path to the extracted .wav file, or None on download failure.
         """
-        from src.utils import extract_audio
+        from .media import extract_audio
 
         # Check if wav already exists before downloading
         out_dir = Path(output_dir)
