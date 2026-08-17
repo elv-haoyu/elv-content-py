@@ -15,11 +15,6 @@ git clone git@github.com:elv-haoyu/elv-content-py.git elv_content_py
 pip install -r elv_content_py/requirements.txt
 ```
 
-That one command covers everything, `elv-client-py` included: it is not on PyPI,
-so `requirements.txt` carries it as a direct reference
-(`elv-client-py @ git+https://github.com/eluv-io/elv-client-py.git`) that pip
-clones itself. Needs `git` on `PATH`, and an ssh key only for the first clone
-above -- pip fetches over https.
 
 For the token and part paths only, `pip install requests imageio-ffmpeg` is
 enough -- neither `elv_client_py` nor `loguru` is imported until `Content`,
