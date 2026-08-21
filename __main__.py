@@ -28,7 +28,7 @@ def cmd_token(args):
 
 
 def cmd_parts(args):
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    parts.configure_logging(args.verbose)
     sys.exit(parts.run(args))
 
 
@@ -63,6 +63,10 @@ def cmd_download(args):
         kwargs["config_url"] = args.config_url
 
     downloader = ContentDownloader(**kwargs)
+    if args.list_reps:
+        for rep in downloader.representations(args.qid, args.offering):
+            print(rep)
+        return
     path = downloader.download(
         content_id=args.qid,
         start_ms=args.start,
@@ -71,6 +75,7 @@ def cmd_download(args):
         offering=args.offering,
         format=args.format,
         audio_only=args.audio_only,
+        representation=args.representation,
     )
     if path is None:
         sys.exit(1)
@@ -104,7 +109,7 @@ def main():
                     help="Content object IDs")
     tp.add_argument("--config-url", default=None, help="Fabric config URL")
     tp.add_argument("--metadata-dir", default="metadata",
-                    help="Directory for per-QID title caches")
+                    help="Directory for per-QID title caches (default: metadata)")
     tp.add_argument("-o", "--output", default=None,
                     help="Output JSON file path")
     tp.set_defaults(func=cmd_title)
@@ -115,17 +120,23 @@ def main():
                     help="Auth token, or a file whose last line is one "
                          "(default: ./token.txt)")
     dp.add_argument("--qid", required=True, help="Content object ID (iq__...)")
-    dp.add_argument("--start", type=int, required=True,
+    dp.add_argument("--start", type=int, default=0,
                     metavar="MS", help="Start time in ms")
-    dp.add_argument("--end", type=int, required=True,
+    dp.add_argument("--end", type=int, default=0,
                     metavar="MS", help="End time in ms")
     dp.add_argument("--output-dir", default="downloads",
-                    help="Output directory")
+                    help="Output directory (default: downloads)")
     dp.add_argument("--offering", default="default_clear",
-                    help="Playout offering")
-    dp.add_argument("--format", default="mp4", help="Container format")
+                    help="Playout offering (default: default_clear)")
+    dp.add_argument("--format", default="mp4",
+                    help="Container format (default: mp4)")
     dp.add_argument("--audio-only", action="store_true",
                     help="Skip the video representation")
+    dp.add_argument("--representation", default=None,
+                    help="Video rendition: an id from --list-reps, or "
+                         "lowest/highest (default: try all, lowest first)")
+    dp.add_argument("--list-reps", action="store_true",
+                    help="Print the available video renditions and exit")
     dp.add_argument("--config-url", default=None, help="Fabric config URL")
     dp.set_defaults(func=cmd_download)
 

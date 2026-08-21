@@ -58,11 +58,15 @@ except ImportError:  # running this file directly rather than as a package modul
 
 logger = logging.getLogger(__name__)
 
-WORKERS = 1
+# Part reads are mostly waiting on the KMS and the node, so they overlap well.
+# Each worker is one `elv` process, ~110 MB resident.
+WORKERS = 8
 EXTRACT_WORKERS = 4
 TIMEOUT = 300
 RETRIES = 4
+PROGRESS_INTERVAL = 10  # seconds between progress lines
 EXTENSIONS = {"video": ".mp4", "audio": ".m4a"}
+OUTPUT_ROOT = "/ml/data/content"
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +131,8 @@ def build_plan(streams: dict, transcodes: dict | None) -> list[dict]:
                 "channels": meta.get("channels"),
                 "channel_layout": meta.get("channel_layout") or "",
                 "label": meta.get("label") or "",
+                "resolution": (f"{meta['width']}x{meta['height']}"
+                               if meta.get("width") and meta.get("height") else ""),
                 "part_duration": part_duration(meta, sources),
                 "fps": parse_fps(meta.get("rate")) if meta["codec_type"] == "video" else None,
                 "parts": [
@@ -219,6 +225,7 @@ class PartDownloader:
             return None
         if qid not in self._libraries:
             arguments = ["content", "library", qid, *auth_flags(self._secret, self._token)]
+            logger.debug("elv content library %s", qid)
             try:
                 self._libraries[qid] = run_elv(arguments, self.config_url).get(qid)
             except (RuntimeError, subprocess.SubprocessError) as error:
@@ -230,7 +237,9 @@ class PartDownloader:
         """A token authorized for `qid`. Group memberships are resolved by the
         CLI and are what non-public metadata reads are checked against."""
         if self._token:
+            logger.debug("using the token supplied by the caller")
             return self._token
+        logger.debug("minting a state-channel token for %s", qid)
         return create_token(
             self._secret, qid, library_id=self.library_id(qid), config_url=self.config_url
         )
@@ -244,6 +253,7 @@ class PartDownloader:
 
         for node in self.nodes:
             base = f"{node}/s/{self.space}/q/{qid}"
+            logger.debug("reading offerings/default from %s", node)
 
             def get(path):
                 response = requests.get(
@@ -253,7 +263,11 @@ class PartDownloader:
                 return response.json()
 
             try:
-                return get("meta/offerings/default/playout/streams"), get("meta/transcodes")
+                streams = get("meta/offerings/default/playout/streams")
+                transcodes = get("meta/transcodes")
+                logger.debug("%d playout streams, %d transcodes", len(streams),
+                             len(transcodes))
+                return streams, transcodes
             except requests.HTTPError as error:
                 if error.response is None or error.response.status_code != 404:
                     errors.append(f"{node}: {error}")
@@ -294,6 +308,7 @@ class PartDownloader:
         """Fetch one part. Returns "cached", "downloaded" or "failed"."""
         if destination.exists() and destination.stat().st_size > 0:
             if looks_like_mp4(destination):
+                logger.debug("cached %s", destination.name)
                 return "cached"
             destination.unlink()  # truncated or undecrypted from an earlier run
 
@@ -308,10 +323,15 @@ class PartDownloader:
 
         last_error = None
         for attempt in range(RETRIES):
+            started = time.time()
             result = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT)
             if result.returncode == 0 and looks_like_mp4(destination):
+                logger.debug("got %s (%.1f MiB in %.1fs)", destination.name,
+                             destination.stat().st_size / 2 ** 20, time.time() - started)
                 return "downloaded"
             last_error = (result.stderr or result.stdout).strip()[:200] or "not valid media"
+            logger.debug("retry %d/%d for %s: %s", attempt + 1, RETRIES, part_hash,
+                         last_error)
             if destination.exists():
                 destination.unlink()
             time.sleep(2 ** attempt)
@@ -320,19 +340,23 @@ class PartDownloader:
 
     # --- the whole object ---
 
-    def download(self, qid: str, output_root="content", language: str = "en",
+    def download(self, qid: str, output_root=OUTPUT_ROOT, language: str = "en",
                  all_streams: bool = False, streams: list[str] | None = None,
                  max_parts: int | None = None, center: bool = True,
                  center_rate: int | None = None, workers: int | None = None) -> dict:
         """Download the selected streams into <output_root>/<qid>, write a manifest
         and return it. Only what is missing on disk is fetched.
         """
+        logger.info("step 1/4  resolving library for %s", qid)
         library_id = self.library_id(qid)
-        logger.info("%s  lib=%s", qid, library_id)
+        logger.info("          library=%s  auth=%s  config=%s", library_id,
+                    "signing key" if self._secret else "token", self.config_url)
 
+        logger.info("step 2/4  reading stream metadata")
         plan = self.plan(qid, language, all_streams, streams)
         if not plan:
             raise RuntimeError(f"no downloadable streams found for {qid}")
+        logger.info("          selected %d stream(s):", len(plan))
 
         destination_root = Path(output_root) / qid
         destination_root.mkdir(parents=True, exist_ok=True)
@@ -349,7 +373,7 @@ class PartDownloader:
                 stream_dir / f"{index:04d}_{part_hash}{extension}"
                 for index, part_hash in enumerate(parts)
             ]
-            detail = entry["label"] or entry["channel_layout"] or ""
+            detail = entry["label"] or entry["channel_layout"] or entry["resolution"]
             logger.info(
                 "  %-40s %-5s %-22s %4d parts  %6.1f min",
                 entry["stream"], entry["codec_type"], detail,
@@ -357,7 +381,8 @@ class PartDownloader:
             )
             jobs += list(zip(entry["files"], parts))
 
-        logger.info("downloading %d parts into %s ...", len(jobs), destination_root)
+        logger.info("step 3/4  downloading %d parts, %d at a time, into %s",
+                    len(jobs), workers or self.workers, destination_root)
         started = time.time()
         counts = {"downloaded": 0, "cached": 0, "failed": 0}
         with ThreadPoolExecutor(max_workers=workers or self.workers) as pool:
@@ -365,12 +390,26 @@ class PartDownloader:
                 pool.submit(self.download_part, qid, part_hash, path, library_id)
                 for path, part_hash in jobs
             ]
+            last, bytes_done = started, 0
             for done, future in enumerate(futures, 1):
                 counts[future.result()] += 1
-                if done % 100 == 0 or done == len(futures):
-                    logger.info("  %d/%d parts  %.0fs", done, len(futures),
-                                time.time() - started)
+                path = jobs[done - 1][0]
+                if path.exists():
+                    bytes_done += path.stat().st_size
+                now = time.time()
+                if now - last >= PROGRESS_INTERVAL or done == len(futures):
+                    last = now
+                    elapsed = now - started
+                    left = (len(futures) - done) * elapsed / done
+                    logger.info(
+                        "  %d/%d parts (%d%%)  %.2f GiB  %.0fs elapsed, %s left",
+                        done, len(futures), done * 100 // len(futures),
+                        bytes_done / 2 ** 30, elapsed,
+                        f"{left / 60:.0f}m" if left > 90 else f"{left:.0f}s",
+                    )
 
+        logger.info("step 4/4  %s",
+                    "extracting center channels" if center else "skipping center extraction")
         center_counts = self._extract_centers(plan, destination_root, center, center_rate)
 
         manifest = {
@@ -386,6 +425,7 @@ class PartDownloader:
                     "label": entry["label"],
                     "channels": entry["channels"],
                     "channel_layout": entry["channel_layout"],
+                    "resolution": entry["resolution"],
                     "part_duration": entry["part_duration"],
                     "fps": entry["fps"],
                     "num_parts": len(entry["selected_parts"]),
@@ -451,8 +491,8 @@ def add_arguments(parser):
                         help="auth token, or a file whose last line is one, instead "
                              "of a signing key (default: ./token.txt)")
     parser.add_argument("--config-url", help="fabric config url")
-    parser.add_argument("-o", "--output-root", default="content",
-                        help="parts land in <output-root>/<qid> (default: content)")
+    parser.add_argument("-o", "--output-root", default=OUTPUT_ROOT,
+                        help=f"parts land in <output-root>/<qid> (default: {OUTPUT_ROOT})")
     parser.add_argument("--language", default="en", help="audio language prefix (default: en)")
     parser.add_argument("--all-streams", action="store_true",
                         help="download every stream instead of one video + one audio")
@@ -463,8 +503,22 @@ def add_arguments(parser):
                         help="resample extracted center audio to this rate (default: source rate)")
     parser.add_argument("--max-parts", type=int,
                         help="stop after N parts per stream (smoke test)")
-    parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--workers", type=int, default=WORKERS,
+                        help=f"parts in flight (default: {WORKERS})")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="per-part detail: elv calls, sizes, timings, retries")
     return parser
+
+
+def configure_logging(verbose: bool = False):
+    """INFO gives the four steps and progress; DEBUG adds every part."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s" if verbose else "%(message)s",
+        datefmt="%H:%M:%S",
+    )
+    if verbose:
+        logging.getLogger("urllib3").setLevel(logging.INFO)
 
 
 def run(args) -> int:
@@ -496,11 +550,12 @@ def main():
     import argparse
     import sys
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sys.exit(run(add_arguments(parser).parse_args()))
+    args = add_arguments(parser).parse_args()
+    configure_logging(args.verbose)
+    sys.exit(run(args))
 
 
 if __name__ == "__main__":

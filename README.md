@@ -70,25 +70,93 @@ The fabric config URL comes from the `config_url` argument, else
 (`https://host-<ip>.contentfabric.io/config?self&qspace=main`) to pin every
 request to that node.
 
-## Use
+## `python -m elv_content_py`
+
+`elv_content_py` is a package directory, not an installed distribution, so run it
+from the directory that *contains* it -- or point `PYTHONPATH` at that directory
+from anywhere else:
 
 ```bash
-export ELV_SECRETS=0x<hex>                     # or pass --secret to each command
+cd /path/to/parent-of-elv_content_py
+source elv-content-tool/bin/activate
+export ELV_SECRETS=0x<hex>            # or pass --secret / use ./token.txt
 
-python -m elv_content_py token iq__4Dzv...                    # state-channel, the default
-python -m elv_content_py token iq__4Dzv... --reenc            # or --update
-python -m elv_content_py parts iq__4Dzv... -o /ml/data/content
-python -m elv_content_py parts iq__4Dzv... --token token.txt  # no key, metadata only
-python -m elv_content_py title --qids iq__4Dzv...             # token.txt
-python -m elv_content_py download --qid iq__4Dzv... --start 0 --end 120000
+python -m elv_content_py <command> ...
+PYTHONPATH=/path/to/parent-of-elv_content_py python -m elv_content_py <command> ...
 ```
 
-A token is `--state-channel` (read: metadata, playout, parts) unless you ask for
-`--reenc` (encrypted content) or `--update` (write; an on-chain transaction, so
-it costs gas).
+Four commands: `token`, `parts`, `title`, `download`. `--config-url` works on all
+of them; `--help` on any of them lists everything.
+
+### `token <qid>` -- mint an auth token
+
+Prints the token on stdout, so redirect it into the file the other commands read.
+
+| flag | |
+| --- | --- |
+| `--secret 0x<hex>` | signing key (default `$ELV_SECRETS`) |
+| `--state-channel` | read token: metadata, playout, parts (default) |
+| `--reenc` | read with re-encryption, for encrypted content |
+| `--update` | write token; an on-chain transaction, so it costs gas |
+| `--library ilib…` | library id, if the CLI cannot resolve it |
+
+```bash
+python -m elv_content_py token iq__4Dzv... > token.txt
+python -m elv_content_py token iq__4Dzv... --reenc
+```
+
+### `parts <qid>` -- download the stored parts of a whole object
+
+Needs a signing key. Writes `<output-root>/<qid>/` with one directory per stream,
+a `manifest.json`, and the 5.1 center channel as mono WAV. Re-running resumes.
+
+| flag | |
+| --- | --- |
+| `-o, --output-root DIR` | parts land in `<DIR>/<qid>` (default `/ml/data/content`) |
+| `--language en` | audio language prefix to prefer |
+| `--all-streams` | every stream, not one video + one audio |
+| `--streams a,b` | exact stream names, overrides selection |
+| `--no-center` / `--center-rate N` | skip center extraction / resample it |
+| `--max-parts N` | stop after N parts per stream (smoke test) |
+| `--workers N` | parts in flight (default 8) |
+| `-v, --verbose` | per-part detail: elv calls, sizes, timings, retries |
+
+```bash
+python -m elv_content_py parts iq__4Dzv...
+python -m elv_content_py parts iq__4Dzv... --max-parts 1 -o /tmp/check -v
+```
+
+### `title --qids <qid> [...]` -- title metadata
+
+Reads `./token.txt` unless given `--token`. Caches one JSON file per qid under
+`--metadata-dir`, and prints the combined result unless `-o` is given.
+
+```bash
+python -m elv_content_py title --qids iq__4Dzv... iq__3A6T... -o titles.json
+```
+
+### `download --qid <qid> --start MS --end MS` -- transcode a clip
+
+Reads `./token.txt` unless given `--token`. Needs a *clear* offering.
+
+| flag | |
+| --- | --- |
+| `--output-dir DIR` | where the file lands (default `downloads`) |
+| `--audio-only` | skip the video rendition entirely |
+| `--list-reps` | print the available video renditions and exit |
+| `--representation ID` | an id from `--list-reps`, or `lowest` / `highest` |
+| `--offering` / `--format` | default `default_clear` / `mp4` |
+
+```bash
+python -m elv_content_py download --qid iq__4Dzv... --list-reps
+python -m elv_content_py download --qid iq__4Dzv... --start 0 --end 10000 \
+    --representation lowest
+```
 
 `elv_token.py` and `parts.py` also run as plain scripts from inside the
 directory (`python parts.py <qid> --secret 0x<hex>`), with no package import.
+
+## From Python
 
 ```python
 from elv_content_py import PartDownloader, create_token, find_secret, load_token
@@ -101,7 +169,9 @@ token = load_token()                                  # or the last line of toke
 ```
 
 `PartDownloader` takes `token=` instead of `secret=` when you only have a token,
-but parts of encrypted content cannot be decrypted without a signing key.
+but parts of encrypted content cannot be decrypted without a signing key. The
+library never configures logging -- call `logging.basicConfig(level=logging.INFO)`
+(or `parts.configure_logging(verbose)`) to see the steps and progress.
 
 ## Two ways to get media
 
@@ -117,7 +187,7 @@ transcode a time range and hands back one file. They are not interchangeable:
 | auth | a signing key: the KMS only releases decryption keys to one | any playout token |
 | deps | the `elv` CLI (+ ffmpeg for center extraction) | `elv_client_py` |
 | offering | `default` (`playout/streams`, or legacy `media_struct`) | `default_clear` |
-| speed | ~7--11 s per part, serial (see below) | one transcode job per clip; polls every 5 s, gives up after 10 min |
+| speed | ~7 s per part, 4 in flight by default (see below) | one transcode job per clip; polls every 5 s, gives up after 10 min |
 | output | one file per part, per stream, plus `manifest.json` | a single `.mp4`/`.wav` per call |
 | resumes | yes -- existing parts are skipped and verified | yes -- an existing output file is returned as is |
 
@@ -155,3 +225,19 @@ by default, preferring 5.1 over stereo, and extracts the 5.1 front-center channe
     english_5_1__..._center/0000_hqpe....wav mono center channel
 ```
 
+
+Parts already on disk are skipped -- and sniffed for an `ftyp` box, so a part
+left undecrypted or truncated by an earlier run is refetched rather than
+trusted -- and an interrupted run resumes.
+
+Eight parts are fetched at a time (`--workers`). One part read takes ~7 s for
+~3.7 MB, nearly all of it spent waiting on the KMS and the node, so overlapping
+them pays. Measured on 12 parts, no failures at any setting:
+
+| workers | 1 | 4 | 8 |
+| --- | --- | --- | --- |
+| an object that parallelizes | 91 s | 34 s | 20 s |
+| one that mostly does not | 89 s | 88 s | 20--76 s |
+
+Each worker is one `elv` process at ~110 MB resident, so lower `--workers` on a
+small machine.
