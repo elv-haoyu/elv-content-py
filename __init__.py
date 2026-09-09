@@ -15,8 +15,8 @@ use -- the token and part modules work without them installed.
 import importlib
 
 from .config import DEFAULT_CONFIG_URL, fabric_nodes, resolve_config_url
-from .elv_token import (create_token, elv_binary, find_secret, load_token,
-                        resolve_token)
+from .elv_token import (create_token, elv_binary, elv_error, find_secret,
+                        is_permission_error, load_token, resolve_token)
 from .parts import PartDownloader, build_plan, select_streams
 
 
@@ -48,8 +48,10 @@ __all__ = [
     "build_plan",
     "create_token",
     "elv_binary",
+    "elv_error",
     "fabric_nodes",
     "find_secret",
+    "is_permission_error",
     "load_token",
     "parse_title_metadata",
     "resolve_config_url",

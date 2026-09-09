@@ -37,6 +37,7 @@ Usage:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -66,6 +67,16 @@ MODE_HELP = {
 DEFAULT_MODE = "state-channel"
 TIMEOUT = 180
 RETRIES = 3
+ERROR_LIMIT = 2000
+
+# `elv` reports failures as a `cause:`-linked chain of `op [...] kind [...]`
+# links, and the last link names the real problem. A denial from the fabric or
+# from the content contract is final -- the key simply has no grant -- so it is
+# worth telling apart from a transient error.
+PERMISSION_MARKERS = ("permission denied", "access denied", "not authorized")
+_STACK_FRAME = re.compile(r"^\s+(?:github\.com/|[\w./-]+\.go:\d+)")
+_BANNER = re.compile(r"^.*?ERR!\s+command failed\s+(?:command=\S+\s+)?"
+                     r"(?:version=\S+\s+)?(?:error=)?")
 
 
 def elv_binary() -> str:
@@ -87,14 +98,37 @@ def auth_flags(secret: str | None = None, token: str | None = None) -> list[str]
     raise ValueError("need either a signing secret or an auth token")
 
 
+def elv_error(result: subprocess.CompletedProcess) -> str:
+    """The useful part of an `elv` failure: its op/kind chain and root cause.
+
+    The CLI prints a banner, then the cause chain, then a Go stack trace.
+    Head-truncating the lot cuts inside the banner and drops the one line that
+    says why the command failed, so keep the chain and discard the trace.
+    """
+    text = (result.stderr or "").strip() or (result.stdout or "").strip()
+    links = []
+    for line in text.splitlines():
+        if _STACK_FRAME.match(line):
+            break
+        link = _BANNER.sub("", line).strip()
+        if link:
+            links.append(link)
+    return " ".join(links)[:ERROR_LIMIT]
+
+
+def is_permission_error(message: str) -> bool:
+    """Whether `message` is a refusal rather than a failure worth retrying."""
+    lowered = message.lower()
+    return any(marker in lowered for marker in PERMISSION_MARKERS)
+
+
 def run_elv(arguments: list[str], config_url: str | None = None, timeout: int = TIMEOUT):
     """Run an `elv` subcommand and return its parsed JSON output."""
     command = [elv_binary(), *arguments, "--config-url", resolve_config_url(config_url)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(
-            f"elv {' '.join(arguments[:3])} failed: "
-            f"{(result.stderr or result.stdout).strip()[:300]}"
+            f"elv {' '.join(arguments[:3])} failed: {elv_error(result)}"
         )
     try:
         return json.loads(result.stdout)
@@ -162,7 +196,10 @@ def create_token(
             command, capture_output=True, text=True, timeout=TIMEOUT
         )
         if result.returncode != 0:
-            last_error = (result.stderr or result.stdout).strip()[:300]
+            last_error = elv_error(result)
+            if is_permission_error(last_error):
+                # The chain has answered; asking twice more changes nothing.
+                break
             time.sleep(0.5 * (attempt + 1))
             continue
         try:

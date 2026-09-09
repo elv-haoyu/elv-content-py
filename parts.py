@@ -46,13 +46,15 @@ import requests
 
 try:
     from .config import fabric_nodes, resolve_config_url
-    from .elv_token import (auth_flags, create_token, elv_binary, find_secret,
-                            resolve_token, run_elv)
+    from .elv_token import (auth_flags, create_token, elv_binary, elv_error,
+                            find_secret, is_permission_error, resolve_token,
+                            run_elv)
     from .media import extract_center, ffmpeg_binary, looks_like_mp4
 except ImportError:  # running this file directly rather than as a package module
     from config import fabric_nodes, resolve_config_url
-    from elv_token import (auth_flags, create_token, elv_binary, find_secret,
-                           resolve_token, run_elv)
+    from elv_token import (auth_flags, create_token, elv_binary, elv_error,
+                           find_secret, is_permission_error, resolve_token,
+                           run_elv)
     from media import extract_center, ffmpeg_binary, looks_like_mp4
 
 
@@ -329,11 +331,17 @@ class PartDownloader:
                 logger.debug("got %s (%.1f MiB in %.1fs)", destination.name,
                              destination.stat().st_size / 2 ** 20, time.time() - started)
                 return "downloaded"
-            last_error = (result.stderr or result.stdout).strip()[:200] or "not valid media"
-            logger.debug("retry %d/%d for %s: %s", attempt + 1, RETRIES, part_hash,
-                         last_error)
+            last_error = elv_error(result) or "not valid media"
             if destination.exists():
                 destination.unlink()
+            if is_permission_error(last_error):
+                # Each read asks the content contract for access on-chain, and a
+                # refusal costs a reverted transaction. Do not pay for it four
+                # times over: the key has no grant on this object.
+                logger.error("DENIED %s: %s", part_hash, last_error)
+                return "failed"
+            logger.debug("retry %d/%d for %s: %s", attempt + 1, RETRIES, part_hash,
+                         last_error)
             time.sleep(2 ** attempt)
         logger.error("FAILED %s: %s", part_hash, last_error)
         return "failed"
