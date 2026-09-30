@@ -2,6 +2,7 @@
 
 Two download paths, one auth path:
 
+    embed_url           embed player URLs, ported from ElvClient.EmbedUrl
     PartDownloader      whole objects, part by part, through the `elv` CLI
     ContentDownloader   time ranges, transcoded by the media/files API
     TitleExtractor      title metadata off the `public` subtree
@@ -15,6 +16,7 @@ use -- the token and part modules work without them installed.
 import importlib
 
 from .config import DEFAULT_CONFIG_URL, fabric_nodes, resolve_config_url
+from .embed import CONTROLS, EMBED_BASE_URL, MEDIA_TYPES, embed_url
 from .elv_token import (create_token, elv_binary, elv_error, find_secret,
                         is_permission_error, load_token, resolve_token)
 from .parts import PartDownloader, build_plan, select_streams
@@ -42,12 +44,16 @@ def __dir__():
 __all__ = [
     "Content",
     "ContentDownloader",
+    "CONTROLS",
     "DEFAULT_CONFIG_URL",
+    "EMBED_BASE_URL",
+    "MEDIA_TYPES",
     "PartDownloader",
     "TitleExtractor",
     "build_plan",
     "create_token",
     "elv_binary",
+    "embed_url",
     "elv_error",
     "fabric_nodes",
     "find_secret",

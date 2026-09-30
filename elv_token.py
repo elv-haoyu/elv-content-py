@@ -122,18 +122,31 @@ def is_permission_error(message: str) -> bool:
     return any(marker in lowered for marker in PERMISSION_MARKERS)
 
 
-def run_elv(arguments: list[str], config_url: str | None = None, timeout: int = TIMEOUT):
-    """Run an `elv` subcommand and return its parsed JSON output."""
+def run_elv(arguments: list[str], config_url: str | None = None,
+            timeout: int = TIMEOUT, retries: int = 1):
+    """Run an `elv` subcommand and return its parsed JSON output.
+
+    With *retries* above 1, a non-zero exit or unparseable output is retried
+    with a linear backoff; the last error is what surfaces if all attempts fail.
+    A permission denial is final and is not retried.
+    """
     command = [elv_binary(), *arguments, "--config-url", resolve_config_url(config_url)]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"elv {' '.join(arguments[:3])} failed: {elv_error(result)}"
-        )
-    try:
-        return json.loads(result.stdout)
-    except ValueError:
-        raise RuntimeError(f"unexpected elv output: {result.stdout[:200]}")
+    last_error = None
+    for attempt in range(retries):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            last_error = elv_error(result)
+            if is_permission_error(last_error):
+                # The chain has answered; asking again changes nothing.
+                break
+        else:
+            try:
+                return json.loads(result.stdout)
+            except ValueError:
+                last_error = f"unexpected elv output: {result.stdout[:200]}"
+        if attempt + 1 < retries:
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(f"elv {' '.join(arguments[:3])} failed: {last_error}")
 
 
 def find_secret(secret: str | None = None) -> str | None:
@@ -184,36 +197,16 @@ def create_token(
     if mode not in MODE_FLAGS:
         raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODE_FLAGS)}")
 
-    command = [elv_binary(), "content", "token", "create", qid]
-    command += MODE_FLAGS[mode]
-    command += ["--secret", secret, "--config-url", resolve_config_url(config_url)]
+    arguments = ["content", "token", "create", qid, *MODE_FLAGS[mode],
+                 "--secret", secret]
     if library_id:
-        command += ["--library", library_id]
+        arguments += ["--library", library_id]
 
-    last_error = None
-    for attempt in range(RETRIES):
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=TIMEOUT
-        )
-        if result.returncode != 0:
-            last_error = elv_error(result)
-            if is_permission_error(last_error):
-                # The chain has answered; asking twice more changes nothing.
-                break
-            time.sleep(0.5 * (attempt + 1))
-            continue
-        try:
-            payload = json.loads(result.stdout)
-        except ValueError:
-            last_error = f"unexpected elv output: {result.stdout[:200]}"
-            time.sleep(0.5 * (attempt + 1))
-            continue
-        token = payload.get("bearer")
-        if token:
-            return token
-        last_error = "no bearer token in elv output"
-
-    raise RuntimeError(f"elv token create failed for {qid} ({mode}): {last_error}")
+    payload = run_elv(arguments, config_url, retries=RETRIES)
+    token = payload.get("bearer")
+    if not token:
+        raise RuntimeError(f"no bearer token from elv for {qid} ({mode})")
+    return token
 
 
 def add_arguments(parser):

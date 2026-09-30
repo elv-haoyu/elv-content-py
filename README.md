@@ -1,7 +1,8 @@
 # elv-content-py
 
 Python helpers for the [Eluvio content fabric](https://eluv.io): auth tokens,
-whole-object part downloads, transcoded clip downloads and title metadata.
+whole-object part downloads, transcoded clip downloads, title metadata and
+embed player URLs.
 
 
 ## Install
@@ -18,7 +19,7 @@ pip install -r elv_content_py/requirements.txt
 
 For the token and part paths only, `pip install requests imageio-ffmpeg` is
 enough -- neither `elv_client_py` nor `loguru` is imported until `Content`,
-`ContentDownloader` or `TitleExtractor` is used.
+`ContentDownloader` or `TitleExtractor` is used. `embed_url` is stdlib only.
 
 
 ## Install `elv` CLI
@@ -172,6 +173,28 @@ token = load_token()                                  # or the last line of toke
 but parts of encrypted content cannot be decrypted without a signing key. The
 library never configures logging -- call `logging.basicConfig(level=logging.INFO)`
 (or `parts.configure_logging(verbose)`) to see the steps and progress.
+
+## Embed URLs
+
+`embed_url()` builds a player link instead of fetching anything -- what you hand
+a reviewer to watch a moment in a browser. Pure string building: no fabric
+calls, no dependencies, no CLI subcommand.
+
+```python
+from elv_content_py import create_token, embed_url
+
+url = embed_url("iq__4Dzv...", clip_start=644.5, clip_end=647.5,
+                offerings=["default_clear"],
+                token=create_token(secret, "iq__4Dzv..."))
+```
+
+Clip points are in **seconds**. Two things the JS `EmbedUrl` does over the
+network that this leaves to you: minting the token (without one the player
+loads but reads nothing) and looking up the network name (`main` by default).
+
+Name a `_clear` offering. With no `off` the player takes the object's default,
+which is often the DRM one, so a reviewer who wants a single frame is sent down
+the licence path.
 
 ## Two ways to get media
 

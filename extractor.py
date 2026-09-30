@@ -8,7 +8,7 @@ from .content import Content, DEFAULT_CONFIG_URL
 
 EXPECTED_FIELDS = [
     "display_title", "release_date", "release_year",
-    "title_type", "plot", "cast", "director",
+    "title_type", "plot", "cast", "director", "library_id",
 ]
 
 
@@ -142,6 +142,11 @@ def parse_title_metadata(metadata: dict, client: Optional[Content] = None) -> di
     plot = info.get("synopsis") or asset.get("synopsis")
 
     fields = {
+        # Persist the resolved Fabric library so downstream content routing can
+        # use config.yml's authoritative library-id map without another API
+        # request. Older cache files omit this field and are refreshed by
+        # TitleExtractor.ensure.
+        "library_id":     getattr(client, "qlib", None),
         # Sports/VOD content stores its title at public/name rather than
         # public/asset_metadata/display_title — fall back to it.
         "display_title": asset.get("display_title") or metadata.get("name"),
@@ -281,8 +286,9 @@ class TitleExtractor:
             qhit: Content object ID (iq__...) or version hash (hq__...).
 
         Returns:
-            Dict with keys: display_title, release_date, release_year,
-            plot, cast, director, screenplay (only non-empty fields).
+            Dict with keys: library_id, display_title, release_date,
+            release_year, plot, cast, director, screenplay (only non-empty
+            fields).
         """
         content = self._get_content(qhit)
         metadata = content.content_object_metadata(metadata_subtree="public")
@@ -292,12 +298,15 @@ class TitleExtractor:
         return result
 
     def ensure(self, qid: str, force: bool = False) -> dict:
-        """Return cached title info, fetching from fabric only if missing."""
+        """Return current title info, refreshing caches without library_id."""
         if not force:
             cached = load_title_info_for_qid(self.metadata_dir, qid)
-            if cached is not None:
+            if cached is not None and cached.get("library_id"):
                 logger.info(f"{qid}: title_info already cached")
                 return cached
+            if cached is not None:
+                logger.info(
+                    f"{qid}: refreshing legacy title_info without library_id")
         else:
             title_path(self.metadata_dir, qid).unlink(missing_ok=True)
             invalidate_title_cache(self.metadata_dir, qid)

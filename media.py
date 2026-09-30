@@ -8,6 +8,7 @@ import logging
 import shutil
 import struct
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,10 @@ logger = logging.getLogger(__name__)
 TIMEOUT = 300
 
 
+@lru_cache(maxsize=1)
 def ffmpeg_binary() -> str:
+    """Path to ffmpeg. Cached — every caller pays the PATH scan otherwise, and
+    it is resolved once per process in practice."""
     found = shutil.which("ffmpeg")
     if found:
         return found
