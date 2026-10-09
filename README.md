@@ -187,7 +187,7 @@ transcode a time range and hands back one file. They are not interchangeable:
 | auth | a signing key: the KMS only releases decryption keys to one | any playout token |
 | deps | the `elv` CLI (+ ffmpeg for center extraction) | `elv_client_py` |
 | offering | `default` (`playout/streams`, or legacy `media_struct`) | `default_clear` |
-| speed | ~7 s per part, 4 in flight by default (see below) | one transcode job per clip; polls every 5 s, gives up after 10 min |
+| speed | ~7 s per part, 8 in flight by default (see below) | one transcode job per clip; polls every 5 s, gives up after 10 min |
 | output | one file per part, per stream, plus `manifest.json` | a single `.mp4`/`.wav` per call |
 | resumes | yes -- existing parts are skipped and verified | yes -- an existing output file is returned as is |
 
@@ -202,10 +202,7 @@ playout. It is also the fallback when you have no signing key, or when the KMS
 will not release decryption keys for an object -- the transcode happens on the
 fabric side, so a plain auth token is enough.
 
-`ContentDownloader.download_parts()` sits between the two: it walks a whole title
-through the media/files API in fixed-length audio chunks (5 min by default), which
-is how you get full-length audio for content whose parts you cannot decrypt.
-`download_audio()` wraps a clip download and extracts mono WAV.
+`ContentDownloader.download_parts()` fetches a whole title's audio on the timeline the Tagstore tracks use: the mezzanine audio parts when a signing key is available, else the audio-only HLS track of an untrimmed offering, else fixed-length media/files audio chunks (5 min by default). An offering that starts at an entry point is refused with `TrimmedOfferingError` unless `allow_trimmed=True`. [developer.md](developer.md) explains the route order. `download_audio()` wraps a clip download and extracts mono WAV.
 
 ### Part downloads in detail
 

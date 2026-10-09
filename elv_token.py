@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""Create Eluvio fabric authorization tokens via the `elv` CLI.
-
-Tokens are created with:
-
-    elv content token create <qid> --state-channel --secret <key>
-
-The CLI resolves the signer's group memberships and embeds them in the token as
-`ctx["elv:groupIds"]`. That is what non-public metadata reads (`meta/transcodes`,
-`meta/offerings/...`) are authorized against, so a hand-rolled token with an empty
-`ctx` is rejected there even though it can read `meta/public/*` and playout.
-
-Modes, passed as the flag itself:
-    --state-channel  off-chain read token (default) -- enough for metadata,
-                     playout and part downloads
-    --reenc          read with re-encryption, for encrypted content
-    --update         write token; requires an on-chain transaction, so it costs
-                     gas and should not be issued in bulk
-
-Auth, in order:
-
-    --secret 0x<hex>    the signing key
-    $ELV_SECRETS        the same key, from the environment
-    ./token.txt         an already-minted token, its last line ($ELV_TOKEN_FILE,
-                        or --token, override the path)
-
-Minting needs the key; a token only carries the access it was minted with and
-cannot sign new authorizations or decrypt.
-
-Usage:
-    export ELV_SECRETS=0x... 
-    python elv_token.py iq__4Dzv28AJhNGsK2FkUEf7FyxYcRwH
-    or 
-    python elv_token.py iq__4Dzv28AJhNGsK2FkUEf7FyxYcRwH --secret 0x...
-    python elv_token.py iq__4Dzv28AJhNGsK2FkUEf7FyxYcRwH --reenc
-"""
 
 import json
 import os
@@ -74,6 +39,10 @@ ERROR_LIMIT = 2000
 # from the content contract is final -- the key simply has no grant -- so it is
 # worth telling apart from a transient error.
 PERMISSION_MARKERS = ("permission denied", "access denied", "not authorized")
+# A denial caused by a duplicate pending access request: concurrent part reads
+# with one key each ask the content contract for access, and the chain reports
+# all but one as "already known". The grant lands moments later, so retry.
+TRANSIENT_ACCESS_MARKERS = ("already known", "waittransact")
 _STACK_FRAME = re.compile(r"^\s+(?:github\.com/|[\w./-]+\.go:\d+)")
 _BANNER = re.compile(r"^.*?ERR!\s+command failed\s+(?:command=\S+\s+)?"
                      r"(?:version=\S+\s+)?(?:error=)?")
@@ -116,10 +85,22 @@ def elv_error(result: subprocess.CompletedProcess) -> str:
     return " ".join(links)[:ERROR_LIMIT]
 
 
-def is_permission_error(message: str) -> bool:
-    """Whether `message` is a refusal rather than a failure worth retrying."""
+def is_transient_access_error(message: str) -> bool:
+    """A permission error caused by a concurrent access request still landing
+    on-chain (see TRANSIENT_ACCESS_MARKERS), which succeeds on retry."""
     lowered = message.lower()
-    return any(marker in lowered for marker in PERMISSION_MARKERS)
+    return any(marker in lowered for marker in TRANSIENT_ACCESS_MARKERS)
+
+
+def is_permission_error(message: str) -> bool:
+    """Whether `message` is a refusal rather than a failure worth retrying.
+
+    The access-request race (is_transient_access_error) also reads
+    "permission denied", but is excluded: it succeeds on retry.
+    """
+    lowered = message.lower()
+    return (any(marker in lowered for marker in PERMISSION_MARKERS)
+            and not is_transient_access_error(message))
 
 
 def run_elv(arguments: list[str], config_url: str | None = None, timeout: int = TIMEOUT):

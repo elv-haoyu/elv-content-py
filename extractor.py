@@ -51,21 +51,48 @@ def _extract_cast_pattern1(talent: dict) -> list:
     return cast
 
 
-def _extract_cast_pattern2(talent: dict) -> list:
-    """Pattern 2: talent.cast / talent.cast_mdb with
-    {talent_first_name, talent_last_name, character_name}."""
-    cast = []
-    entries = talent.get("cast") or talent.get("cast_mdb") or []
+def _name_key(name: str) -> str:
+    """Comparison key for a person name: case- and whitespace-insensitive."""
+    return " ".join(name.split()).casefold()
+
+
+def _dedup(entries: list) -> list:
+    """Drop repeated credit strings (case/whitespace-insensitive), keeping the
+    first occurrence and credit order."""
+    seen: set[str] = set()
+    unique = []
     for entry in entries:
-        name = _full_name(entry)
-        if not name:
-            continue
-        char = (entry.get("character_name") or "").strip()
-        if char:
-            cast.append(f"{name} plays {char}")
-        else:
-            cast.append(name)
-    return cast
+        key = _name_key(entry)
+        if key not in seen:
+            seen.add(key)
+            unique.append(entry)
+    return unique
+
+
+def _extract_cast_pattern2(talent: dict) -> list:
+    """Pattern 2: talent.cast + talent.cast_mdb with
+    {talent_first_name, talent_last_name, character_name}.
+
+    ``cast`` is the curated list, kept in credit order; ``cast_mdb`` (often
+    longer, with minor roles) adds only actors missing from it. Entries that
+    collapse to the same "Name plays Role" are dropped.
+    """
+    cast = []
+    cast_actors: set[str] = set()
+    for source in ("cast", "cast_mdb"):
+        source_actors: set[str] = set()
+        for entry in talent.get(source) or []:
+            name = _full_name(entry)
+            if not name:
+                continue
+            key = _name_key(name)
+            if source == "cast_mdb" and key in cast_actors:
+                continue
+            source_actors.add(key)
+            char = (entry.get("character_name") or "").strip()
+            cast.append(f"{name} plays {char}" if char else name)
+        cast_actors |= source_actors
+    return _dedup(cast)
 
 
 def _extract_cast_from_ml(client: Content) -> list:
@@ -73,8 +100,8 @@ def _extract_cast_from_ml(client: Content) -> list:
     try:
         ml = client.content_object_metadata(metadata_subtree='ml')
     except Exception as exc:
-        # Most objects have no ml subtree, but an auth or network failure looks
-        # identical here — log it so it is not silently read as "no cast".
+        # Usually just no ml subtree, but an auth or network failure looks the
+        # same here; log it so it is not silently read as "no cast".
         logger.debug(f"{client.qid}: no cast from ml subtree — {exc}")
         return []
 
@@ -132,18 +159,23 @@ def parse_title_metadata(metadata: dict, client: Optional[Content] = None) -> di
     info = asset.get("info") or {}
     talent = info.get("talent") or {}
 
-    # Try pattern 1 (actor/voice/host), then pattern 2 (cast/cast_mdb),
-    # then pattern 3 (ml subtree castlist)
-    cast = _extract_cast_pattern1(talent) or _extract_cast_pattern2(talent)
+    # Pattern 1, then pattern 2 on info.talent, then pattern 2 on
+    # info.ipm_talent (where some titles keep the cast, leaving only crew
+    # under talent), then pattern 3.
+    cast = (
+        _extract_cast_pattern1(talent)
+        or _extract_cast_pattern2(talent)
+        or _extract_cast_pattern2(info.get("ipm_talent") or {})
+    )
     if not cast and client is not None:
         cast = _extract_cast_from_ml(client)
+    cast = _dedup(cast)
 
     # Synopsis: prefer info.synopsis, fall back to asset_metadata.synopsis
     plot = info.get("synopsis") or asset.get("synopsis")
 
     fields = {
-        # Sports/VOD content stores its title at public/name rather than
-        # public/asset_metadata/display_title — fall back to it.
+        # Sports/VOD objects keep their title at public/name instead.
         "display_title": asset.get("display_title") or metadata.get("name"),
         "release_date":  info.get("release_date"),
         "release_year":  info.get("us_release_year"),
@@ -282,7 +314,7 @@ class TitleExtractor:
 
         Returns:
             Dict with keys: display_title, release_date, release_year,
-            plot, cast, director, screenplay (only non-empty fields).
+            title_type, plot, cast, director, screenplay (non-empty only).
         """
         content = self._get_content(qhit)
         metadata = content.content_object_metadata(metadata_subtree="public")

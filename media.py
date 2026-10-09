@@ -1,9 +1,3 @@
-"""Local ffmpeg helpers and media sniffing.
-
-ffmpeg is resolved from PATH, falling back to the imageio_ffmpeg wheel, and only
-when it is needed, so the rest of the package imports fine without either.
-"""
-
 import logging
 import shutil
 import struct

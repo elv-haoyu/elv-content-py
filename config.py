@@ -1,9 +1,3 @@
-"""Fabric configuration lookup.
-
-Kept free of every optional dependency (no elv_client_py, no loguru) so the
-token and part-download modules can be used on their own.
-"""
-
 import os
 from functools import lru_cache
 

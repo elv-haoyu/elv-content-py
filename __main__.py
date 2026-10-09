@@ -1,18 +1,3 @@
-"""
-CLI entry point.
-
-Usage:
-  python -m elv_content_py token iq__xxx --secret 0x<hex>
-  python -m elv_content_py parts iq__xxx --secret 0x<hex> -o /ml/data/content
-  python -m elv_content_py title --qids iq__xxx iq__yyy -o output.json
-  python -m elv_content_py download --qid iq__xxx --start 0 --end 120000
-
-`token` and `parts` speak to the `elv` CLI and need only requests; `title` and
-`download` go through elv_client_py. Both read their auth token from --token,
-which takes a token or a file whose last line is one, and defaults to
-./token.txt.
-"""
-
 import argparse
 import json
 import logging

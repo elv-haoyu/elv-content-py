@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""Download the raw fabric media parts of a content object.
-
-Media is stored as an ordered list of encrypted parts per stream, so downloading
-means fetching each part in order. Parts are pulled through the `elv` CLI because
-decryption happens client-side -- a plain HTTP GET returns bytes that look fine
-but are not media.
-
-By default this fetches one video stream and one English audio stream, preferring
-5.1 over stereo, and extracts the center channel from a 5.1 track (the center
-channel carries dialogue, so it is the useful one for speech work). Pass
-`all_streams` to take every stream instead.
-
-Layout under <output_root>/<qid>/:
-
-    manifest.json                            streams, part hashes, durations
-    video/0000_hqpe....mp4
-    english_5_1__.../0000_hqpe....m4a        as downloaded (5.1)
-    english_5_1__..._center/0000_hqpe....wav mono center channel
-
-Re-running skips parts already on disk, so an interrupted download resumes.
-
-This is the whole-object counterpart to `downloader.ContentDownloader`, which
-transcodes time ranges through the media/files API instead; use that one for
-clips, or when the parts cannot be decrypted locally.
-
-Auth is the signing key -- `--secret 0x<hex>`, else $ELV_SECRETS -- else an
-already-minted token: `--token`, or the last line of ./token.txt. A bare token
-cannot decrypt the parts of encrypted content.
-
-Usage:
-    ELV_SECRETS=0x... python parts.py iq__4Dzv28AJhNGsK2FkUEf7FyxYcRwH
-    python parts.py <qid> --secret 0x<hex> --all-streams
-    python parts.py <qid> --token token.txt --language es
-"""
 
 import json
 import logging
@@ -335,9 +301,9 @@ class PartDownloader:
             if destination.exists():
                 destination.unlink()
             if is_permission_error(last_error):
-                # Each read asks the content contract for access on-chain, and a
-                # refusal costs a reverted transaction. Do not pay for it four
-                # times over: the key has no grant on this object.
+                # The key has no grant on this object, and every attempt costs
+                # a reverted on-chain transaction: stop now. (The concurrent
+                # access-request race is not a refusal; it is retried below.)
                 logger.error("DENIED %s: %s", part_hash, last_error)
                 return "failed"
             logger.debug("retry %d/%d for %s: %s", attempt + 1, RETRIES, part_hash,
@@ -559,7 +525,7 @@ def main():
     import sys
 
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Download a content object's media parts through the elv CLI."
     )
     args = add_arguments(parser).parse_args()
     configure_logging(args.verbose)

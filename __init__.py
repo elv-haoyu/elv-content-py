@@ -1,17 +1,3 @@
-"""Python helpers for the Eluvio content fabric.
-
-Two download paths, one auth path:
-
-    PartDownloader      whole objects, part by part, through the `elv` CLI
-    ContentDownloader   time ranges, transcoded by the media/files API
-    TitleExtractor      title metadata off the `public` subtree
-    create_token        fabric auth tokens, signed by the `elv` CLI
-
-Only `requests` is required. `Content`, `ContentDownloader` and `TitleExtractor`
-additionally need `elv_client_py` and `loguru`, so they are imported on first
-use -- the token and part modules work without them installed.
-"""
-
 import importlib
 
 from .config import DEFAULT_CONFIG_URL, fabric_nodes, resolve_config_url
@@ -20,6 +6,8 @@ from .elv_token import (create_token, elv_binary, elv_error, find_secret,
 from .parts import PartDownloader, build_plan, select_streams
 
 
+# Imported on first use: these need elv_client_py and loguru, which the token
+# and part modules above do not.
 _LAZY = {
     "Content": "content",
     "ContentDownloader": "downloader",
